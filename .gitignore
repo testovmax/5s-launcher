@@ -1,9 +1,10 @@
 # --- local, machine-specific: never commit ---
 tools/tunnel.local.cmd
-
+macos/tunnel.local.conf
+macos
 # --- widget/launcher state and logs ---
 tools/*.log
 
 # --- binaries and build artefacts ---
-tools/gost.exe
+
 tools/5s-launcher.exe
