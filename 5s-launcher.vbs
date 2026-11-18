@@ -4,4 +4,4 @@ Dim fso, here
 Set fso = CreateObject("Scripting.FileSystemObject")
 here = fso.GetParentFolderName(WScript.ScriptFullName)
 CreateObject("Wscript.Shell").Run _
-  "powershell.exe -NoProfile -ExecutionPolicy Bypass -File """ & here & "\5s-launcher.ps1""", 0, False
+  "powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File """ & here & "\5s-launcher.ps1""", 0, False

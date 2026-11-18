@@ -1,10 +1,10 @@
 ﻿# 5s-launcher.ps1 - 5S Launcher: control panel for the proxy stack.
-# Buttons: SSH tunnel start/stop, gost bridge start/stop, system proxy on/off.
-# System proxy uses smart routing: RU sites go direct, the rest via proxy.
+# SSH tunnel is its own button. Gost and the system proxy are one button.
+# Routing checkbox: sites from tools\bypass.txt go direct, or everything external
+# goes through the proxy. Localhost and the internal network always stay direct.
 # Live status refresh every 3 seconds.
 #
 # Run:  wscript 5s-launcher.vbs        (silent)
-# Compact desktop version: 5s-widget.ps1
 
 $OutputEncoding = [System.Text.Encoding]::UTF8
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -22,16 +22,37 @@ if (-not ("Native.ConsoleUtil" -as [type])) {
 }
 [Native.ConsoleUtil]::ShowWindow([Native.ConsoleUtil]::GetConsoleWindow(), 0) | Out-Null
 
-# Settings, probes and start/stop logic live in tools\5s-common.ps1,
-# shared with the desktop widget - edit the bypass list there.
+if (-not ("Native.Caption" -as [type])) {
+    Add-Type -Name Caption -Namespace Native -MemberDefinition @'
+[DllImport("dwmapi.dll")]
+public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
+public static void Paint(IntPtr hwnd) {
+    int dark = 1;
+    DwmSetWindowAttribute(hwnd, 20, ref dark, 4);
+    int caption = 0x0034180B; // #0B1834
+    int text = 0x00FAF5F2;    // #F2F5FA
+    DwmSetWindowAttribute(hwnd, 35, ref caption, 4);
+    DwmSetWindowAttribute(hwnd, 36, ref text, 4);
+    DwmSetWindowAttribute(hwnd, 34, ref caption, 4);
+}
+'@
+}
+function Set-DarkCaption($target) {
+    $hwnd = (New-Object System.Windows.Interop.WindowInteropHelper($target)).EnsureHandle()
+    [Native.Caption]::Paint($hwnd) | Out-Null
+}
+
+# Settings, probes and start/stop logic live in tools\5s-common.ps1.
+# The bypass list is tools\bypass.txt. Servers are tools\connections.json.
 . "$PSScriptRoot\tools\5s-common.ps1"
 
 [xml]$xaml = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="5S Launcher" Height="450" Width="500"
-        WindowStartupLocation="CenterScreen" Background="#0B1834"
-        FontFamily="Segoe UI">
+        Title="5S Launcher" Height="560" Width="560"
+        ResizeMode="NoResize" WindowStartupLocation="CenterScreen"
+        UseLayoutRounding="True" SnapsToDevicePixels="True"
+        Background="#0B1834" FontFamily="Segoe UI">
   <Window.Resources>
     <Style x:Key="ActionBtn" TargetType="Button">
       <Setter Property="Background" Value="#1B4F9C"/>
@@ -52,7 +73,148 @@ if (-not ("Native.ConsoleUtil" -as [type])) {
               <Trigger Property="IsPressed" Value="True">
                 <Setter TargetName="bd" Property="Background" Value="#16407F"/>
               </Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter TargetName="bd" Property="Opacity" Value="0.45"/>
+              </Trigger>
             </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style x:Key="MoreBtn" TargetType="Button">
+      <Setter Property="Width" Value="32"/>
+      <Setter Property="Height" Value="32"/>
+      <Setter Property="Background" Value="#081226"/>
+      <Setter Property="Foreground" Value="#7FA6DA"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="bd" Background="{TemplateBinding Background}" CornerRadius="10">
+              <TextBlock Text="···" Foreground="#7FA6DA" FontSize="16"
+                         HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,-6,0,0"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="bd" Property="Background" Value="#0F2145"/>
+              </Trigger>
+              <Trigger Property="IsPressed" Value="True">
+                <Setter TargetName="bd" Property="Background" Value="#1C3868"/>
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter TargetName="bd" Property="Opacity" Value="0.45"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style x:Key="DarkMenu" TargetType="ContextMenu">
+      <Setter Property="Background" Value="#081226"/>
+      <Setter Property="Foreground" Value="#7FA6DA"/>
+      <Setter Property="BorderThickness" Value="0"/>
+      <Setter Property="Padding" Value="4"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ContextMenu">
+            <Border Background="#081226" CornerRadius="10" Padding="4">
+              <StackPanel IsItemsHost="True"/>
+            </Border>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style x:Key="DarkMenuItem" TargetType="MenuItem">
+      <Setter Property="Foreground" Value="#7FA6DA"/>
+      <Setter Property="FontFamily" Value="Consolas"/>
+      <Setter Property="FontSize" Value="12"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="MenuItem">
+            <Border x:Name="bd" Background="Transparent" Padding="10,6" CornerRadius="6" Margin="2,1">
+              <ContentPresenter ContentSource="Header"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsHighlighted" Value="True">
+                <Setter TargetName="bd" Property="Background" Value="#0F2145"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style x:Key="ServerCombo" TargetType="ComboBox">
+      <Setter Property="Foreground" Value="#7FA6DA"/>
+      <Setter Property="Background" Value="#081226"/>
+      <Setter Property="BorderThickness" Value="0"/>
+      <Setter Property="FontFamily" Value="Consolas"/>
+      <Setter Property="FontSize" Value="12"/>
+      <Setter Property="Height" Value="32"/>
+      <Setter Property="SnapsToDevicePixels" Value="True"/>
+      <Setter Property="ItemContainerStyle">
+        <Setter.Value>
+          <Style TargetType="ComboBoxItem">
+            <Setter Property="Foreground" Value="#7FA6DA"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="FontFamily" Value="Consolas"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Padding" Value="8,5"/>
+            <Setter Property="HorizontalContentAlignment" Value="Left"/>
+            <Setter Property="Template">
+              <Setter.Value>
+                <ControlTemplate TargetType="ComboBoxItem">
+                  <Border x:Name="row" Background="{TemplateBinding Background}"
+                          Padding="{TemplateBinding Padding}" CornerRadius="6" Margin="2,1">
+                    <ContentPresenter/>
+                  </Border>
+                  <ControlTemplate.Triggers>
+                    <Trigger Property="IsHighlighted" Value="True">
+                      <Setter TargetName="row" Property="Background" Value="#0F2145"/>
+                    </Trigger>
+                    <Trigger Property="IsSelected" Value="True">
+                      <Setter TargetName="row" Property="Background" Value="#1C3868"/>
+                      <Setter Property="Foreground" Value="#F2F5FA"/>
+                    </Trigger>
+                  </ControlTemplate.Triggers>
+                </ControlTemplate>
+              </Setter.Value>
+            </Setter>
+          </Style>
+        </Setter.Value>
+      </Setter>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ComboBox">
+            <Grid x:Name="root">
+              <ToggleButton Focusable="False" ClickMode="Press" Background="Transparent"
+                            IsChecked="{Binding IsDropDownOpen, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}">
+                <ToggleButton.Template>
+                  <ControlTemplate TargetType="ToggleButton">
+                    <Border Background="#081226" CornerRadius="10">
+                      <Path Data="M 0 0 L 3.5 3.5 L 7 0" Stroke="#7E93B5" StrokeThickness="1.3"
+                            HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,12,0"
+                            StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
+                    </Border>
+                  </ControlTemplate>
+                </ToggleButton.Template>
+              </ToggleButton>
+              <TextBlock Foreground="#7FA6DA" FontFamily="Consolas" FontSize="12"
+                         Margin="12,0,28,0" VerticalAlignment="Center"
+                         TextTrimming="CharacterEllipsis" IsHitTestVisible="False"
+                         Text="{Binding SelectedItem.Label, RelativeSource={RelativeSource TemplatedParent}}"/>
+              <Popup Placement="Bottom" AllowsTransparency="True" Focusable="False" PopupAnimation="Fade"
+                     IsOpen="{TemplateBinding IsDropDownOpen}" PlacementTarget="{Binding ElementName=root}">
+                <Border Background="#081226" CornerRadius="10" Padding="4" Margin="0,4,0,0"
+                        MinWidth="{Binding ActualWidth, ElementName=root}"
+                        MaxHeight="{TemplateBinding MaxDropDownHeight}">
+                  <ScrollViewer Background="#081226" BorderThickness="0"
+                                HorizontalScrollBarVisibility="Disabled"
+                                VerticalScrollBarVisibility="Auto">
+                    <ItemsPresenter/>
+                  </ScrollViewer>
+                </Border>
+              </Popup>
+            </Grid>
           </ControlTemplate>
         </Setter.Value>
       </Setter>
@@ -60,6 +222,7 @@ if (-not ("Native.ConsoleUtil" -as [type])) {
   </Window.Resources>
   <Grid Margin="20">
     <Grid.RowDefinitions>
+      <RowDefinition Height="Auto"/>
       <RowDefinition Height="Auto"/>
       <RowDefinition Height="Auto"/>
       <RowDefinition Height="Auto"/>
@@ -73,7 +236,28 @@ if (-not ("Native.ConsoleUtil" -as [type])) {
                  VerticalAlignment="Center"/>
     </StackPanel>
 
-    <Border Grid.Row="1" Background="#0F2145" BorderBrush="#1C3868" BorderThickness="1"
+    <StackPanel Grid.Row="1" Margin="0,0,0,14">
+      <TextBlock Text="СЕРВЕР" Foreground="#7E93B5" FontSize="11" Margin="2,0,0,6"/>
+      <Grid>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*"/>
+          <ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
+        <ComboBox x:Name="SrvCombo" Style="{StaticResource ServerCombo}"
+                  DisplayMemberPath="Label" SelectedValuePath="Id" VerticalAlignment="Center"/>
+        <Button x:Name="BtnMore" Grid.Column="1" Margin="8,0,0,0" Style="{StaticResource MoreBtn}" ToolTip="Действия с сервером">
+          <Button.ContextMenu>
+            <ContextMenu x:Name="ServerMenu" Style="{StaticResource DarkMenu}">
+              <MenuItem x:Name="MiAdd" Header="Добавить" Style="{StaticResource DarkMenuItem}"/>
+              <MenuItem x:Name="MiEdit" Header="Изменить" Style="{StaticResource DarkMenuItem}"/>
+              <MenuItem x:Name="MiDel" Header="Удалить" Style="{StaticResource DarkMenuItem}"/>
+            </ContextMenu>
+          </Button.ContextMenu>
+        </Button>
+      </Grid>
+    </StackPanel>
+
+    <Border Grid.Row="2" Background="#0F2145" BorderBrush="#1C3868" BorderThickness="1"
             CornerRadius="10" Padding="16,14" Margin="0,0,0,14">
       <Grid>
         <Grid.RowDefinitions>
@@ -87,26 +271,29 @@ if (-not ("Native.ConsoleUtil" -as [type])) {
 
         <TextBlock x:Name="DotTunnel" Grid.Row="0" Grid.Column="0" Text="●" FontSize="16"
                    Foreground="#D97757" VerticalAlignment="Center"/>
-        <TextBlock x:Name="StTunnel" Grid.Row="0" Grid.Column="1" Text="SSH-туннель: ..."
-                   Foreground="#C9D6EA" FontSize="13" VerticalAlignment="Center"/>
+        <TextBlock x:Name="StTunnel" Grid.Row="0" Grid.Column="1" Text="Туннель: ..."
+                   Foreground="#C9D6EA" FontSize="13" VerticalAlignment="Center" TextWrapping="Wrap"/>
         <Button x:Name="BtnTunnel" Grid.Row="0" Grid.Column="2" Content="..." Style="{StaticResource ActionBtn}"/>
 
-        <TextBlock x:Name="DotGost" Grid.Row="2" Grid.Column="0" Text="●" FontSize="16"
+        <TextBlock x:Name="DotProxy" Grid.Row="2" Grid.Column="0" Text="●" FontSize="16"
                    Foreground="#D97757" VerticalAlignment="Center"/>
-        <TextBlock x:Name="StGost" Grid.Row="2" Grid.Column="1" Text="Мост gost: ..."
-                   Foreground="#C9D6EA" FontSize="13" VerticalAlignment="Center"/>
-        <Button x:Name="BtnGost" Grid.Row="2" Grid.Column="2" Content="..." Style="{StaticResource ActionBtn}"/>
+        <TextBlock x:Name="StProxy" Grid.Row="2" Grid.Column="1" Text="Прокси: ..."
+                   Foreground="#C9D6EA" FontSize="13" VerticalAlignment="Center" TextWrapping="Wrap"/>
+        <Button x:Name="BtnProxy" Grid.Row="2" Grid.Column="2" Content="..." Style="{StaticResource ActionBtn}"/>
 
-        <TextBlock x:Name="DotProxy" Grid.Row="4" Grid.Column="0" Text="●" FontSize="16"
-                   Foreground="#D97757" VerticalAlignment="Center"/>
-        <TextBlock x:Name="StProxy" Grid.Row="4" Grid.Column="1" Text="Системный прокси: ..."
-                   Foreground="#C9D6EA" FontSize="13" VerticalAlignment="Center"/>
-        <Button x:Name="BtnProxy" Grid.Row="4" Grid.Column="2" Content="..." Style="{StaticResource ActionBtn}"/>
+        <StackPanel Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="2">
+          <CheckBox x:Name="ChkRoute" Content="Маршрутизация: сайты из списка напрямую"
+                    Foreground="#C9D6EA" FontSize="13" VerticalAlignment="Center"
+                    ToolTip="Локальная сеть и localhost всегда идут напрямую."/>
+          <TextBlock Margin="18,5,0,0" FontSize="12">
+            <Hyperlink x:Name="LinkBypass" Foreground="#2D7FE0">Открыть список</Hyperlink>
+          </TextBlock>
+        </StackPanel>
       </Grid>
     </Border>
 
-    <TextBlock Grid.Row="2" Text="ЖУРНАЛ" Foreground="#7E93B5" FontSize="11" Margin="2,0,0,6"/>
-    <Border Grid.Row="3" Background="#081226" CornerRadius="10" Padding="6">
+    <TextBlock Grid.Row="3" Text="ЖУРНАЛ" Foreground="#7E93B5" FontSize="11" Margin="2,0,0,6"/>
+    <Border Grid.Row="4" Background="#081226" CornerRadius="10" Padding="6">
       <TextBox x:Name="LogBox" Background="Transparent" Foreground="#7FA6DA"
                FontFamily="Consolas" FontSize="12" IsReadOnly="True" BorderThickness="0"
                VerticalScrollBarVisibility="Auto" TextWrapping="Wrap" Padding="8,6"/>
@@ -117,6 +304,7 @@ if (-not ("Native.ConsoleUtil" -as [type])) {
 
 $reader = New-Object System.Xml.XmlNodeReader $xaml
 $window = [Windows.Markup.XamlReader]::Load($reader)
+$window.Add_SourceInitialized({ Set-DarkCaption $window })
 
 # Window icon = taskbar icon (otherwise Windows shows the PowerShell icon).
 if (Test-Path $IconFile) {
@@ -255,66 +443,409 @@ namespace Native {
 }
 
 $StTunnel  = $window.FindName("StTunnel");  $BtnTunnel = $window.FindName("BtnTunnel")
-$StGost    = $window.FindName("StGost");    $BtnGost   = $window.FindName("BtnGost")
 $StProxy   = $window.FindName("StProxy");   $BtnProxy  = $window.FindName("BtnProxy")
-$DotTunnel = $window.FindName("DotTunnel"); $DotGost   = $window.FindName("DotGost")
-$DotProxy  = $window.FindName("DotProxy");  $LogBox    = $window.FindName("LogBox")
+$DotTunnel = $window.FindName("DotTunnel"); $DotProxy  = $window.FindName("DotProxy")
+$LogBox    = $window.FindName("LogBox");    $SrvCombo  = $window.FindName("SrvCombo")
+$BtnMore   = $window.FindName("BtnMore");   $ChkRoute  = $window.FindName("ChkRoute")
+$MiAdd     = $window.FindName("MiAdd");     $MiEdit    = $window.FindName("MiEdit")
+$MiDel     = $window.FindName("MiDel")
+
+$script:SuspendUi = $false
+$script:ActionBusy = $false
+$global:FiveSPingText = ""
+$global:FiveSPingHost = ""
 
 function Log($msg) {
-    $LogBox.AppendText("[" + (Get-Date -Format "HH:mm:ss") + "] $msg`r`n")
+    foreach ($line in @(([string]$msg) -split "`r?`n")) {
+        if ($line -eq "") { continue }
+        $LogBox.AppendText("[" + (Get-Date -Format "HH:mm:ss") + "] $line`r`n")
+    }
     $LogBox.ScrollToEnd()
 }
 
+function Test-ProxyStop {
+    if (ProxyPair-On) { return $true }
+    # Tunnel is down, so the pair cannot be completed. Offer to clear the half-state.
+    if (-not (Tunnel-Up) -and ((Gost-Up) -or (Proxy-On))) { return $true }
+    $false
+}
+
+function Get-ActiveHost {
+    $conn = Get-ActiveConnection
+    if (-not $conn -or -not $conn.target) { return $null }
+    if ($conn.protocol -eq "vless") {
+        if ($conn.target -match '^(.+):\d+$') { return $Matches[1] }
+        return [string]$conn.target
+    }
+    if ($conn.target -match '@([^@]+)$') { return $Matches[1] }
+    [string]$conn.target
+}
+
+function Read-ServerPing {
+    if (-not $script:PingProc) { return }
+    if (-not $script:PingProc.HasExited) { return }
+    $text = "нет ответа"
+    if ($script:PingOut -and (Test-Path -LiteralPath $script:PingOut)) {
+        $raw = [System.IO.File]::ReadAllText($script:PingOut, [System.Text.Encoding]::GetEncoding(866))
+        if ($raw -match '(?:time|время)\s*[=<]\s*(\d+)') { $text = "$($Matches[1]) мс" }
+    }
+    $global:FiveSPingText = $text
+    $script:PingProc = $null
+}
+
+function Start-ServerPing {
+    Read-ServerPing
+    $h = Get-ActiveHost
+    if (-not $h) { $global:FiveSPingText = ""; $global:FiveSPingHost = ""; return }
+    if ($global:FiveSPingHost -ne $h) { $global:FiveSPingText = ""; $global:FiveSPingHost = $h }
+    if ($script:PingProc -and -not $script:PingProc.HasExited) { return }
+    $out = Join-Path $env:TEMP "5s-ping.txt"
+    $script:PingOut = $out
+    $script:PingProc = Start-Process -FilePath "$env:SystemRoot\System32\ping.exe" -ArgumentList @("-n","1","-w","1000",$h) `
+        -WindowStyle Hidden -RedirectStandardOutput $out -PassThru
+}
+
 function Refresh-Status {
-    # Палитра иконки: работает - ярко-синяя точка (#2D7FE0), остановлен - терракотовая (#D97757).
-    # Текст статуса всегда спокойный светлый, состояние показывает точка-индикатор.
-    if (Tunnel-Up) { $StTunnel.Text = "SSH-туннель: работает (порт $TunnelPort)"; $DotTunnel.Foreground = "#2D7FE0"; $BtnTunnel.Content = "Остановить" }
-    else           { $StTunnel.Text = "SSH-туннель: остановлен";                  $DotTunnel.Foreground = "#D97757"; $BtnTunnel.Content = "Запустить" }
-    if (Gost-Up)   { $StGost.Text = "Мост gost: работает (порт $BridgePort)";     $DotGost.Foreground = "#2D7FE0";   $BtnGost.Content = "Остановить" }
-    else           { $StGost.Text = "Мост gost: остановлен";                      $DotGost.Foreground = "#D97757";   $BtnGost.Content = "Запустить" }
-    if (Proxy-On)  { $StProxy.Text = "Системный прокси: включён (:$BridgePort)";  $DotProxy.Foreground = "#2D7FE0";  $BtnProxy.Content = "Выключить" }
-    else           { $StProxy.Text = "Системный прокси: выключен";                $DotProxy.Foreground = "#D97757";  $BtnProxy.Content = "Включить" }
+    $conn = Get-ActiveConnection
+    $who = if ($conn) { $conn.name } else { "сервер не выбран" }
+    $kind = if ($conn -and $conn.protocol -eq "vless") { "VLESS" } else { "SSH" }
+    $ping = if ($global:FiveSPingText) { " · $($global:FiveSPingText)" } else { "" }
+    if (Tunnel-Up) { $StTunnel.Text = "${kind}: работает · $who$ping"; $DotTunnel.Foreground = "#2D7FE0"; $BtnTunnel.Content = "Остановить" }
+    else           { $StTunnel.Text = "${kind}: остановлен · $who$ping"; $DotTunnel.Foreground = "#D97757"; $BtnTunnel.Content = "Запустить" }
+    if (ProxyPair-On) {
+        $StProxy.Text = "Прокси: включён (127.0.0.1:$BridgePort)"
+        $DotProxy.Foreground = "#2D7FE0"
+    } elseif ((Gost-Up) -and -not (Proxy-On)) {
+        $StProxy.Text = "Прокси: мост есть, системный выключен"
+        $DotProxy.Foreground = "#D97757"
+    } elseif ((Proxy-On) -and -not (Gost-Up)) {
+        $StProxy.Text = "Прокси: системный включён, мост не работает"
+        $DotProxy.Foreground = "#D97757"
+    } else {
+        $StProxy.Text = "Прокси: выключен"
+        $DotProxy.Foreground = "#D97757"
+    }
+    if (Test-ProxyStop) { $BtnProxy.Content = "Выключить" } else { $BtnProxy.Content = "Включить" }
+}
+
+function Update-ConnectionList {
+    $script:SuspendUi = $true
+    $cfg = Get-LauncherConfig
+    $items = New-Object System.Collections.Generic.List[object]
+    foreach ($c in (ConvertTo-ConnList $cfg.connections)) {
+        $items.Add([pscustomobject]@{ Id = $c.id; Label = "$($c.name)  —  $($c.target)" })
+    }
+    $SrvCombo.ItemsSource = $items
+    if ($cfg.activeId) { $SrvCombo.SelectedValue = [string]$cfg.activeId }
+    $ChkRoute.IsChecked = [bool]$cfg.routing
+    $script:SuspendUi = $false
+}
+
+function Set-ActionsEnabled([bool]$On) {
+    $BtnTunnel.IsEnabled = $On
+    $BtnProxy.IsEnabled = $On
+    $BtnMore.IsEnabled = $On
+    $SrvCombo.IsEnabled = $On
+    $ChkRoute.IsEnabled = $On
+}
+
+function Invoke-LauncherAction([string]$Name) {
+    if ($script:ActionBusy) { return }
+    $script:ActionBusy = $true
+    $window.Cursor = [System.Windows.Input.Cursors]::Wait
+    try {
+        $result = switch ($Name) {
+            "start-tunnel"  { Start-Tunnel }
+            "stop-tunnel"   { Stop-Tunnel }
+            "start-proxy"   { $cfg = Get-LauncherConfig; Start-ProxyPair -Routing ([bool]$cfg.routing) }
+            "stop-proxy"    { Stop-ProxyPair }
+            "switch-tunnel" { Switch-Tunnel }
+            "apply-routing" { Apply-Routing }
+            default         { "Неизвестное действие: $name" }
+        }
+        if ($result) { Log ($result -join " ") }
+    } catch {
+        Log ("Ошибка: " + $_.Exception.Message)
+    } finally {
+        $script:ActionBusy = $false
+        $window.Cursor = [System.Windows.Input.Cursors]::Arrow
+        Refresh-Status
+    }
+}
+
+function Show-ConnectionDialog($Existing) {
+    [xml]$dxaml = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Подключение" Height="520" Width="500"
+        WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
+        Background="#0B1834" FontFamily="Segoe UI" ShowInTaskbar="False">
+  <Grid Margin="20">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+      <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+      <RowDefinition Height="*"/>
+      <RowDefinition Height="Auto"/>
+    </Grid.RowDefinitions>
+    <TextBlock Grid.Row="0" Text="Имя" Foreground="#C9D6EA" Margin="0,0,0,4"/>
+    <TextBox x:Name="ConnName" Grid.Row="1" Height="28" Margin="0,0,0,12" Padding="6,2"/>
+    <TextBlock Grid.Row="2" Text="Протокол" Foreground="#C9D6EA" Margin="0,0,0,4"/>
+    <ComboBox x:Name="ConnProto" Grid.Row="3" Height="32" Margin="0,0,0,12"
+              DisplayMemberPath="Label" SelectedValuePath="Id"/>
+    <StackPanel x:Name="SshFields" Grid.Row="4">
+      <TextBlock Text="Сервер (login@host)" Foreground="#C9D6EA" Margin="0,0,0,4"/>
+      <TextBox x:Name="ConnTarget" Height="28" Margin="0,0,0,12" Padding="6,2"/>
+      <TextBlock Text="Ключ SSH, можно оставить пустым" Foreground="#C9D6EA" Margin="0,0,0,4"/>
+      <Grid Margin="0,0,0,8">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*"/><ColumnDefinition Width="96"/>
+        </Grid.ColumnDefinitions>
+        <TextBox x:Name="ConnKey" Height="28" Padding="6,2"/>
+        <Button x:Name="BtnBrowse" Grid.Column="1" Content="Обзор" Margin="8,0,0,0" Height="28"/>
+      </Grid>
+    </StackPanel>
+    <StackPanel x:Name="VlessFields" Grid.Row="4" Visibility="Collapsed">
+      <TextBlock Text="Ссылка vless://" Foreground="#C9D6EA" Margin="0,0,0,4"/>
+      <TextBox x:Name="ConnLink" Height="120" Padding="6,4" TextWrapping="Wrap"
+               AcceptsReturn="True" VerticalScrollBarVisibility="Auto"/>
+      <TextBlock Margin="0,8,0,0" Foreground="#7E93B5" FontSize="12" TextWrapping="Wrap"
+                 Text="Локальный SOCKS остаётся на порту 5555, мост HTTP не меняется."/>
+    </StackPanel>
+    <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+      <Button x:Name="BtnCancel" Content="Отмена" Width="96" Height="32" Margin="0,0,8,0"/>
+      <Button x:Name="BtnSave" Content="Сохранить" Width="110" Height="32"/>
+    </StackPanel>
+  </Grid>
+</Window>
+'@
+    $dlg = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $dxaml))
+    $dlg.Owner = $window
+    $dlg.Add_SourceInitialized({ Set-DarkCaption $dlg }.GetNewClosure())
+    $dlg.Title = if ($Existing) { "Изменить подключение" } else { "Новое подключение" }
+    $nameBox = $dlg.FindName("ConnName")
+    $targetBox = $dlg.FindName("ConnTarget")
+    $keyBox = $dlg.FindName("ConnKey")
+    $linkBox = $dlg.FindName("ConnLink")
+    $sshFields = $dlg.FindName("SshFields")
+    $vlessFields = $dlg.FindName("VlessFields")
+    $proto = $dlg.FindName("ConnProto")
+    $proto.Style = $window.FindResource("ServerCombo")
+    $proto.ItemsSource = @(
+        [pscustomobject]@{ Id = "ssh"; Label = "SSH" },
+        [pscustomobject]@{ Id = "vless"; Label = "VLESS" }
+    )
+    $proto.Add_SelectionChanged({
+        $vless = [string]$proto.SelectedValue -eq "vless"
+        $sshFields.Visibility = if ($vless) { "Collapsed" } else { "Visible" }
+        $vlessFields.Visibility = if ($vless) { "Visible" } else { "Collapsed" }
+    }.GetNewClosure())
+    if ($Existing) {
+        $nameBox.Text = [string]$Existing.name
+        $targetBox.Text = [string]$Existing.target
+        $keyBox.Text = [string]$Existing.identity
+        $linkBox.Text = [string]$Existing.link
+        $proto.SelectedValue = if ([string]$Existing.protocol -eq "vless") { "vless" } else { "ssh" }
+    } else {
+        $proto.SelectedValue = "ssh"
+    }
+    # A hashtable, not $script:, because the click handler runs in its own
+    # module and would not be able to hand the values back otherwise.
+    $result = @{ Value = $null }
+    $dlg.FindName("BtnBrowse").Add_Click({
+        $pick = New-Object Microsoft.Win32.OpenFileDialog
+        $pick.Title = "Ключ SSH"
+        $pick.Filter = "Все файлы|*.*"
+        if ($keyBox.Text -and (Test-Path -LiteralPath $keyBox.Text)) {
+            $pick.InitialDirectory = Split-Path -Parent $keyBox.Text
+            $pick.FileName = Split-Path -Leaf $keyBox.Text
+        }
+        if ($pick.ShowDialog($dlg)) { $keyBox.Text = $pick.FileName }
+    }.GetNewClosure())
+    $cancel = $dlg.FindName("BtnCancel")
+    $cancel.IsCancel = $true
+    $cancel.Add_Click({ $dlg.DialogResult = $false }.GetNewClosure())
+    $save = $dlg.FindName("BtnSave")
+    $save.IsDefault = $true
+    $save.Add_Click({
+        $chosen = [string]$proto.SelectedValue
+        $err = Test-ConnectionFields $nameBox.Text $targetBox.Text $keyBox.Text $chosen $linkBox.Text
+        if ($err) {
+            [System.Windows.MessageBox]::Show($dlg, $err, "Подключение", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning) | Out-Null
+            return
+        }
+        $result.Value = [pscustomobject]@{
+            Name     = $nameBox.Text.Trim()
+            Target   = $targetBox.Text.Trim()
+            Identity = $keyBox.Text.Trim()
+            Protocol = $chosen
+            Link     = $linkBox.Text.Trim()
+        }
+        $dlg.DialogResult = $true
+    }.GetNewClosure())
+    if ($dlg.ShowDialog()) { return $result.Value }
+    $null
+}
+
+function Get-SelectedConnection {
+    $cfg = Get-LauncherConfig
+    $id = [string]$SrvCombo.SelectedValue
+    if (-not $id) { $id = [string]$cfg.activeId }
+    Find-Connection $cfg.connections $id
 }
 
 # ---- actions ----
 $BtnTunnel.Add_Click({
-    if (Tunnel-Up) {
-        Log "Останавливаю туннель (окно bat + ssh)..."
-        Log (Stop-Tunnel)
-    } else {
-        Log "Запускаю туннель (в фоне, без окна)..."
-        Log (Start-Tunnel)
-    }
-    Refresh-Status
-})
-
-$BtnGost.Add_Click({
-    if (Gost-Up) {
-        Log (Stop-Gost)
-    } else {
-        if (-not (Tunnel-Up)) { Log "Сначала подними SSH-туннель - мосту некуда пересылать." }
-        Log (Start-Gost)
-    }
-    Refresh-Status
+    if (Tunnel-Up) { Log "Останавливаю туннель..."; Invoke-LauncherAction "stop-tunnel" }
+    else { Log "Запускаю туннель..."; Invoke-LauncherAction "start-tunnel" }
 })
 
 $BtnProxy.Add_Click({
-    if (Proxy-On) { Set-SystemProxy $false; Log "Системный прокси выключен." }
-    else {
-        Set-SystemProxy $true
-        Log "Системный прокси включён -> 127.0.0.1:$BridgePort."
-        if (-not (Gost-Up)) { Log "Внимание: мост gost не запущен - без него интернет через прокси не пойдёт." }
+    if (Test-ProxyStop) { Invoke-LauncherAction "stop-proxy" }
+    else { Log "Включаю мост и системный прокси..."; Invoke-LauncherAction "start-proxy" }
+})
+
+$ChkRoute.Add_Click({
+    if ($script:SuspendUi) { return }
+    $on = [bool]$ChkRoute.IsChecked
+    Set-RoutingEnabled $on
+    if (Proxy-On) { Invoke-LauncherAction "apply-routing" }
+    elseif ($on) { Log "Маршрутизация включена. Заработает вместе с прокси." }
+    else { Log "Маршрутизация выключена. Внешний трафик пойдёт через прокси." }
+})
+
+$window.FindName("LinkBypass").Add_Click({
+    if (-not (Test-Path -LiteralPath $BypassFile)) {
+        Log "Нет файла tools\bypass.txt."
+        return
     }
+    Start-Process -FilePath $BypassFile
+    Log "Открыт список. После правок переключите галку, чтобы применить."
+})
+
+$SrvCombo.Add_SelectionChanged({
+    if ($script:SuspendUi) { return }
+    $newId = [string]$SrvCombo.SelectedValue
+    if (-not $newId) { return }
+    $cfg = Get-LauncherConfig
+    if ($newId -eq [string]$cfg.activeId) { return }
+    if (Tunnel-Up) {
+        $answer = [System.Windows.MessageBox]::Show(
+            $window,
+            "Переключить туннель на выбранный сервер?",
+            "5S Launcher",
+            [System.Windows.MessageBoxButton]::YesNo,
+            [System.Windows.MessageBoxImage]::Question)
+        if ($answer -ne [System.Windows.MessageBoxResult]::Yes) {
+            $script:SuspendUi = $true
+            $SrvCombo.SelectedValue = [string]$cfg.activeId
+            $script:SuspendUi = $false
+            return
+        }
+        Set-ActiveConnection $newId | Out-Null
+        Log "Переключаю туннель..."
+        Invoke-LauncherAction "switch-tunnel"
+        return
+    }
+    $msg = Set-ActiveConnection $newId
+    Log $msg
+    Refresh-Status
+})
+
+$BtnMore.Add_Click({
+    $menu = $BtnMore.ContextMenu
+    $menu.PlacementTarget = $BtnMore
+    $menu.Placement = [System.Windows.Controls.Primitives.PlacementMode]::Bottom
+    $menu.IsOpen = $true
+})
+
+$MiAdd.Add_Click({
+    $made = Show-ConnectionDialog $null
+    if (-not $made) { return }
+    $item = Add-Connection $made.Name $made.Target $made.Identity $made.Protocol $made.Link
+    if ($item -is [string]) { Log $item; return }
+    if (-not (Get-LauncherConfig).activeId) { Set-ActiveConnection $item.id | Out-Null }
+    Update-ConnectionList
+    Log "Добавлен сервер: $($made.Name)"
+    Refresh-Status
+})
+
+$MiEdit.Add_Click({
+    $cur = Get-SelectedConnection
+    if (-not $cur) { Log "Сначала добавьте подключение."; return }
+    $edited = Show-ConnectionDialog $cur
+    if (-not $edited) { return }
+    $msg = Update-Connection $cur.id $edited.Name $edited.Target $edited.Identity $edited.Protocol $edited.Link
+    if ($msg -ne "Подключение сохранено.") { Log $msg; return }
+    Update-ConnectionList
+    Log $msg
+    if (Tunnel-Up -and $cur.id -eq [string](Get-LauncherConfig).activeId) {
+        $answer = [System.Windows.MessageBox]::Show(
+            $window,
+            "Перезапустить туннель с новыми данными?",
+            "5S Launcher",
+            [System.Windows.MessageBoxButton]::YesNo,
+            [System.Windows.MessageBoxImage]::Question)
+        if ($answer -eq [System.Windows.MessageBoxResult]::Yes) {
+            Log "Перезапускаю туннель..."
+            Invoke-LauncherAction "switch-tunnel"
+        }
+    }
+    Refresh-Status
+})
+
+$MiDel.Add_Click({
+    $cur = Get-SelectedConnection
+    if (-not $cur) { return }
+    if ((Tunnel-Up) -and $cur.id -eq [string](Get-LauncherConfig).activeId) {
+        [System.Windows.MessageBox]::Show($window, "Сначала остановите туннель — это активный сервер.", "5S Launcher", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information) | Out-Null
+        return
+    }
+    $answer = [System.Windows.MessageBox]::Show($window, "Удалить «$($cur.name)»?", "5S Launcher", [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Question)
+    if ($answer -ne [System.Windows.MessageBoxResult]::Yes) { return }
+    Log (Remove-Connection $cur.id)
+    Update-ConnectionList
     Refresh-Status
 })
 
 # ---- live refresh every 3s ----
 $timer = New-Object System.Windows.Threading.DispatcherTimer
 $timer.Interval = [TimeSpan]::FromSeconds(3)
-$timer.Add_Tick({ Refresh-Status })
+$timer.Add_Tick({ try { if (-not $script:ActionBusy) { Refresh-Status } } catch {} })
 $timer.Start()
 
+$pingTimer = New-Object System.Windows.Threading.DispatcherTimer
+$pingTimer.Interval = [TimeSpan]::FromSeconds(5)
+$pingTimer.Add_Tick({ try { Start-ServerPing } catch { $global:FiveSPingBusy = $false } })
+$pingTimer.Start()
+Start-ServerPing
+
+# Tunnel drop: close the Claude desktop app. A manual Stop sets the flag first.
+$script:TunnelWasUp = [bool](Tunnel-Up)
+$tunnelWatch = New-Object System.Windows.Threading.DispatcherTimer
+$tunnelWatch.Interval = [TimeSpan]::FromMilliseconds(250)
+$tunnelWatch.Add_Tick({
+    try {
+        $up = [bool](Tunnel-Up)
+        if ($up) {
+            $global:FiveSUserStoppedTunnel = $false
+        } elseif ($script:TunnelWasUp) {
+            if ($global:FiveSUserStoppedTunnel) {
+                $global:FiveSUserStoppedTunnel = $false
+            } else {
+                $msg = Stop-ClaudeApp
+                if ($msg) { Log $msg } else { Log "Туннель упал." }
+            }
+        }
+        $script:TunnelWasUp = $up
+    } catch {}
+})
+$tunnelWatch.Start()
+
+Update-ConnectionList
 Log "Пульт запущен."
+$boot = Get-ActiveConnection
+if ($boot) { Log "Сервер: $($boot.name)" } else { Log "Добавьте SSH-подключение." }
+if ([bool]$ChkRoute.IsChecked) { Log "Маршрутизация включена." } else { Log "Маршрутизация выключена." }
 Refresh-Status
 
 # ---- Taskbar identity: tiny launcher EXE + Start Menu shortcut ----
@@ -330,7 +861,7 @@ using System.Diagnostics;
 class Program {
     static void Main() {
         ProcessStartInfo psi = new ProcessStartInfo("powershell.exe",
-            "-NoProfile -ExecutionPolicy Bypass -File \"$($BaseDir -replace '\\','\\')\\5s-launcher.ps1\"");
+            "-NoProfile -STA -ExecutionPolicy Bypass -File \"$($BaseDir -replace '\\','\\')\\5s-launcher.ps1\"");
         psi.UseShellExecute = false;
         psi.CreateNoWindow = true;
         psi.WindowStyle = ProcessWindowStyle.Hidden;

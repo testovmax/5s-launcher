@@ -1,7 +1,14 @@
 # --- local, machine-specific: never commit ---
 tools/tunnel.local.cmd
+tools/tunnel.active.cmd
+tools/connections.json
+tools/connections.json.bak
+tools/tunnel.pid
+tools/tunnel.userstop
+tools/vless.link
+tools/vless.json
+tools/xray.exe
 macos/tunnel.local.conf
-macos
 # --- widget/launcher state and logs ---
 tools/*.log
 

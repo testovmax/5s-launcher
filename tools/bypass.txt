@@ -1,0 +1,44 @@
+﻿# Сайты, на которые ходим НАПРЯМУЮ, мимо прокси.
+# Одна маска в строке. Строки, начинающиеся с #, игнорируются.
+#
+#   example.com    - только сам домен
+#   *.example.com  - все поддомены (www, api, cdn, static ...)
+#
+# Обычно нужны обе строки сразу.
+# Файл перечитывается при каждом включении прокси:
+# добавили строку -> выключили и включили прокси -> работает.
+
+# --- российские зоны ---
+*.ru
+*.su
+*.by
+*.xn--p1ai
+
+# --- VK и его CDN ---
+vk.com
+*.vk.com
+*.userapi.com
+*.vkuservideo.net
+*.vkuseraudio.net
+
+# --- Одноклассники / Mail.ru ---
+*.mycdn.me
+
+# --- Яндекс ---
+*.yandex.net
+*.yastatic.net
+*.yandex.com
+
+# --- банки и магазины ---
+sberbank.com
+*.sberbank.com
+*.ozonusercontent.com
+*.wbstatic.net
+*.2gis.com
+
+# --- добавлено вручную ---
+192.168.1.1
+playerok.com
+*.playerok.com
+tvoe.live
+*.tvoe.live
